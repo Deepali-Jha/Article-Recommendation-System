@@ -1,0 +1,255 @@
+# Delete old file and create new one
+Remove-Item app.py -Force
+
+# Create new file with correct content
+@"
+import numpy as np
+import pandas as pd
+from flask import Flask, render_template, request, jsonify
+from collections import Counter
+import ast
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+app = Flask(__name__)
+
+def load_data():
+    try:
+        df = pd.read_csv("medium_articles.csv")
+        print(f"CSV loaded with {len(df)} rows")
+        
+        if 'tags' in df.columns:
+            df['tags'] = df['tags'].apply(lambda x: ast.literal_eval(x) if pd.notna(x) and x != '[]' else [])
+        else:
+            df['tags'] = [[] for _ in range(len(df))]
+        
+        if 'authors' in df.columns:
+            df['authors'] = df['authors'].apply(lambda x: ast.literal_eval(x) if pd.notna(x) and x != '[]' else [])
+        else:
+            df['authors'] = [[] for _ in range(len(df))]
+        
+        if 'timestamp' in df.columns:
+            # FIX: Remove timezone and parse
+            df['timestamp'] = df['timestamp'].astype(str).str.replace('+00:00', '')
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            df = df.dropna(subset=['timestamp'])
+        else:
+            df['timestamp'] = pd.Timestamp.now()
+        
+        if 'title' in df.columns:
+            df['clean_title'] = df['title'].str.lower().fillna('')
+        else:
+            df['clean_title'] = ''
+        
+        print(f"Successfully loaded {len(df)} articles")
+        return df
+    except Exception as e:
+        print(f"Error: {e}")
+        return pd.DataFrame()
+
+print("Loading data...")
+df = load_data()
+
+if len(df) > 0:
+    print("Initializing recommender...")
+    tfidf = TfidfVectorizer(max_features=5000, stop_words='english')
+    df['content'] = df['clean_title'] + ' ' + df['tags'].apply(lambda x: ' '.join(x) if x else '')
+    tfidf_matrix = tfidf.fit_transform(df['content'])
+    all_tags = [tag for tags in df['tags'] for tag in tags]
+    popular_tags = Counter(all_tags).most_common(50)
+    print(f"Ready! {len(df)} articles")
+else:
+    tfidf_matrix = None
+    popular_tags = []
+
+@app.route('/')
+def index():
+    if len(df) > 0:
+        latest = df.sort_values('timestamp', ascending=False).head(12).to_dict('records')
+    else:
+        latest = []
+    return render_template('index.html', articles=latest, popular_tags=popular_tags[:20])
+
+@app.route('/article/<int:article_id>')
+def article_detail(article_id):
+    if article_id >= len(df):
+        return "Article not found", 404
+    article = df.iloc[article_id].to_dict()
+    if tfidf_matrix is not None:
+        similarities = cosine_similarity(tfidf_matrix[article_id], tfidf_matrix).flatten()
+        similar_indices = similarities.argsort()[::-1][1:7]
+        recommendations = df.iloc[similar_indices].to_dict('records')
+    else:
+        recommendations = []
+    return render_template('article.html', article=article, recommendations=recommendations)
+
+@app.route('/search')
+def search():
+    query = request.args.get('q', '').lower()
+    if query and len(df) > 0:
+        mask = df['clean_title'].str.contains(query, na=False)
+        results = df[mask].sort_values('timestamp', ascending=False).head(20).to_dict('records')
+    else:
+        results = []
+    return render_template('search.html', results=results, query=query)
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
+"@ | Out-File -FilePath app.py -Encoding utf8
+
+
+# import numpy as np
+# import pandas as pd
+# from flask import Flask, render_template, request, jsonify
+# from collections import Counter
+# import re
+# import ast
+
+# app = Flask(__name__)
+
+# # Load and prepare the data
+# def load_data():
+#     df = pd.read_csv("medium_articles.csv")
+    
+#     # Clean and prepare data
+#     df['tags'] = df['tags'].apply(lambda x: ast.literal_eval(x) if pd.notna(x) else [])
+#     df['authors'] = df['authors'].apply(lambda x: ast.literal_eval(x) if pd.notna(x) else [])
+#     df['timestamp'] = pd.to_datetime(df['timestamp'])
+    
+#     # Add text length and readability score
+#     df['text_length'] = df['text'].str.len()
+    
+#     # Clean title and text for better search
+#     df['clean_title'] = df['title'].str.lower().fillna('')
+    
+#     return df
+
+# # Create TF-IDF vectorizer for content-based recommendations
+# from sklearn.feature_extraction.text import TfidfVectorizer
+# from sklearn.metrics.pairwise import cosine_similarity
+
+# class ArticleRecommender:
+#     def __init__(self, df):
+#         self.df = df
+#         self.tfidf = TfidfVectorizer(max_features=5000, stop_words='english')
+#         self.tag_vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
+#         self._prepare_features()
+    
+#     def _prepare_features(self):
+#         # Combine title and tags for better content representation
+#         self.df['content_for_rec'] = self.df['clean_title'] + ' ' + self.df['tags'].apply(lambda x: ' '.join(x))
+        
+#         # Create TF-IDF matrices
+#         self.content_matrix = self.tfidf.fit_transform(self.df['content_for_rec'])
+        
+#         # Tag-based features
+#         all_tags = [' '.join(tags) for tags in self.df['tags']]
+#         self.tag_matrix = self.tag_vectorizer.fit_transform(all_tags)
+    
+#     def get_content_recommendations(self, article_index, n=10):
+#         """Get recommendations based on content similarity"""
+#         if article_index >= len(self.df):
+#             return []
+        
+#         content_sim = cosine_similarity(self.content_matrix[article_index], self.content_matrix).flatten()
+#         tag_sim = cosine_similarity(self.tag_matrix[article_index], self.tag_matrix).flatten()
+        
+#         # Combine similarities (70% content, 30% tags)
+#         combined_sim = 0.7 * content_sim + 0.3 * tag_sim
+        
+#         similar_indices = combined_sim.argsort()[::-1][1:n+1]
+#         return self.df.iloc[similar_indices].to_dict('records')
+    
+#     def search_by_tags(self, tags, n=20):
+#         """Search articles by tags"""
+#         if not tags:
+#             return []
+        
+#         query_tags = [t.strip().lower() for t in tags.split(',')]
+        
+#         # Find articles that contain any of the searched tags
+#         mask = self.df['tags'].apply(lambda x: any(tag in [t.lower() for t in x] for tag in query_tags))
+#         results = self.df[mask].sort_values('timestamp', ascending=False).head(n)
+#         return results.to_dict('records')
+    
+#     def search_by_title(self, query, n=20):
+#         """Search articles by title"""
+#         if not query:
+#             return []
+        
+#         query = query.lower()
+#         mask = self.df['clean_title'].str.contains(query, na=False)
+#         results = self.df[mask].sort_values('timestamp', ascending=False).head(n)
+#         return results.to_dict('records')
+    
+#     def get_popular_tags(self, n=50):
+#         """Get most popular tags"""
+#         all_tags = [tag for tags in self.df['tags'] for tag in tags]
+#         return Counter(all_tags).most_common(n)
+
+# # Initialize the recommender
+# print("Loading data and initializing recommender...")
+# df = load_data()
+# recommender = ArticleRecommender(df)
+# popular_tags = recommender.get_popular_tags(50)
+
+# @app.route('/')
+# def index():
+#     """Home page with latest articles and popular tags"""
+#     latest_articles = df.sort_values('timestamp', ascending=False).head(12).to_dict('records')
+#     return render_template('index.html', 
+#                          articles=latest_articles, 
+#                          popular_tags=popular_tags[:20])
+
+# @app.route('/article/<int:article_id>')
+# def article_detail(article_id):
+#     """Article detail page with recommendations"""
+#     if article_id >= len(df):
+#         return "Article not found", 404
+    
+#     article = df.iloc[article_id].to_dict()
+#     recommendations = recommender.get_content_recommendations(article_id, n=6)
+    
+#     return render_template('article.html', 
+#                          article=article, 
+#                          recommendations=recommendations)
+
+# @app.route('/search')
+# def search():
+#     """Search results page"""
+#     query = request.args.get('q', '')
+#     tag_search = request.args.get('tag', '')
+    
+#     if tag_search:
+#         results = recommender.search_by_tags(tag_search)
+#         search_type = f"Tag: {tag_search}"
+#     else:
+#         results = recommender.search_by_title(query)
+#         search_type = f"Search: {query}"
+    
+#     return render_template('search.html', 
+#                          results=results, 
+#                          search_type=search_type,
+#                          query=query)
+
+# @app.route('/api/recommend/<int:article_id>')
+# def api_recommend(article_id):
+#     """API endpoint for recommendations"""
+#     recommendations = recommender.get_content_recommendations(article_id, n=5)
+#     return jsonify(recommendations)
+
+# @app.route('/api/search')
+# def api_search():
+#     """API endpoint for searching"""
+#     query = request.args.get('q', '')
+#     tag = request.args.get('tag', '')
+    
+#     if tag:
+#         results = recommender.search_by_tags(tag, n=10)
+#     else:
+#         results = recommender.search_by_title(query, n=10)
+    
+#     return jsonify(results)
+
+# if __name__ == '__main__':
+#     app.run(debug=True, port=5000)
